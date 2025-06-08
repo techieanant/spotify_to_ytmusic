@@ -14,6 +14,45 @@ from spotify2ytmusic import ytmusic_credentials
 
 SongInfo = namedtuple("SongInfo", ["title", "artist", "album"])
 
+def save_progress(playlist_id: str, progress_file: str = "spotify2ytmusic_progress.json"):
+    """Save the current playlist processing progress"""
+    progress_data = {
+        "last_processed_playlist": playlist_id,
+        "timestamp": time.time()
+    }
+    with open(progress_file, 'w') as f:
+        json.dump(progress_data, f, indent=2)
+
+def load_progress(progress_file: str = "spotify2ytmusic_progress.json") -> Optional[str]:
+    """Load the last processed playlist ID"""
+    if not os.path.exists(progress_file):
+        return None
+    try:
+        with open(progress_file, 'r') as f:
+            data = json.load(f)
+            return data.get("last_processed_playlist")
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+def request_user_intervention():
+    """Request user to update raw headers and oauth2.json"""
+    print("\n" + "="*80)
+    print("AUTHENTICATION ERROR DETECTED")
+    print("="*80)
+    print("The program has encountered repeated authentication failures.")
+    print("This usually means the YouTube Music authentication has expired.")
+    print("\nPlease perform the following steps:")
+    print("1. Update your raw_headers.txt file with fresh headers from YouTube Music")
+    print("2. Run 'ytmusicapi oauth' to generate a new oauth.json file")
+    print("3. Ensure both files are properly updated and saved")
+    print("\nFor detailed instructions on how to get fresh headers, refer to:")
+    print("https://ytmusicapi.readthedocs.io/en/stable/setup/index.html")
+    print("="*80)
+    
+    # Wait for user confirmation
+    input("\nPress ENTER when you have completed the above steps and are ready to continue...")
+    print("Resuming playlist processing...\n")
+
 
 def get_ytmusic() -> YTMusic:
     """
@@ -243,9 +282,27 @@ def get_playlist_id_by_name(yt: YTMusic, title: str) -> Optional[str]:
                 # For now, let it try the next iteration with potentially stale 'current_yt_instance',
                 # or if get_ytmusic() failed, it might raise an exception that stops the process.
         else:
-            # All retries exhausted
+            # All retries exhausted - request user intervention
             print(f"ERROR: Failed to retrieve playlist list to find '{title}' after {max_retries} retries due to TypeError or None response.")
-            return None 
+            request_user_intervention()
+            
+            # After user intervention, try once more with fresh credentials
+            try:
+                ytmusic_credentials.setup_ytmusic_with_raw_headers() 
+                yt = get_ytmusic()
+                playlists_list = yt.get_library_playlists(limit=5000)
+                
+                if playlists_list is not None:
+                    for pl in playlists_list:
+                        if pl["title"] == title:
+                            return pl["playlistId"]
+                    return None
+                else:
+                    print(f"ERROR: Still unable to retrieve playlist list after user intervention for '{title}'")
+                    return None
+            except Exception as e:
+                print(f"ERROR: Failed to retrieve playlist list even after user intervention for '{title}': {e}")
+                return None
 
     # Fallback if loop completes (e.g. if max_retries is 0, though it's 5 here)
     return None
@@ -544,6 +601,27 @@ def copy_all_playlists(
     spotify_pls = load_playlists_json()
     yt = get_ytmusic()
 
+    # Check for existing progress and ask user if they want to resume
+    last_processed = load_progress()
+    start_from_beginning = True
+    
+    if last_processed:
+        print(f"\nFound previous progress: last processed playlist ID was '{last_processed}'")
+        while True:
+            user_choice = input("Do you want to resume from where you left off? (yes/no): ").lower()
+            if user_choice in ["yes", "y"]:
+                start_from_beginning = False
+                print(f"Resuming from playlist after '{last_processed}'...")
+                break
+            elif user_choice in ["no", "n"]:
+                print("Starting from the beginning...")
+                break
+            else:
+                print("Invalid input. Please enter 'yes' or 'no'.")
+
+    # Flag to track if we should start processing (used when resuming)
+    should_process = start_from_beginning
+    
     for src_pl in spotify_pls["playlists"]:
         if str(src_pl.get("name")) == "Liked Songs":
             continue
@@ -552,6 +630,16 @@ def copy_all_playlists(
         if pl_name == "":
             pl_name = f"Unnamed Spotify Playlist {src_pl['id']}"
 
+        # If resuming, skip playlists until we reach the one after the last processed
+        if not start_from_beginning and not should_process:
+            if src_pl["id"] == last_processed:
+                should_process = True  # Start processing from the next playlist
+            continue
+        elif not start_from_beginning and src_pl["id"] == last_processed:
+            continue  # Skip the last processed playlist itself
+
+        print(f"\n=== Processing playlist: {pl_name} (ID: {src_pl['id']}) ===")
+        
         dst_pl_id = get_playlist_id_by_name(yt, pl_name)
         print(f"Looking up playlist '{pl_name}': id={dst_pl_id}")
 
@@ -613,6 +701,15 @@ def copy_all_playlists(
             track_sleep,
             yt_search_algo,
         )
+        
+        # Save progress after successfully processing each playlist
+        save_progress(src_pl["id"])
+        print(f"Progress saved: completed playlist '{pl_name}' (ID: {src_pl['id']})")
         print("\nPlaylist done!\n")
 
+    # Clean up progress file when all playlists are done
+    if os.path.exists("spotify2ytmusic_progress.json"):
+        os.remove("spotify2ytmusic_progress.json")
+        print("Progress file cleaned up.")
+    
     print("All done!")
