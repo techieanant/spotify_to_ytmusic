@@ -558,38 +558,39 @@ def copy_all_playlists(
         spotify_track_count = len(src_pl["tracks"])
 
         if dst_pl_id is not None:
-            yt_track_count_str = "unknown"
+            yt_track_count = "unknown"
             try:
                 yt_playlist_details = yt.get_playlist(playlistId=dst_pl_id, limit=1)
-                yt_track_count = yt_playlist_details.get('trackCount')
-
-                if yt_track_count is not None and abs(yt_track_count - spotify_track_count) <= 5:
-                    print(f"Playlist '{pl_name}' already exists on YouTube Music with {yt_track_count} songs (Spotify has {spotify_track_count} songs).")
-                    while True:
-                        user_choice = input("Do you want to skip this playlist? (yes/no): ").lower()
-                        if user_choice in ["yes", "y"]:
-                            print(f"Skipping playlist '{pl_name}'.")
-                            print("\nPlaylist done!\n")  # Maintain consistent output for each playlist processed
-                            continue # Move to the next Spotify playlist
-                        elif user_choice in ["no", "n"]:
-                            print(f"Proceeding to update playlist '{pl_name}'.")
-                            break
-                        else:
-                            print("Invalid input. Please enter 'yes' or 'no'.")
-                    else: # This else belongs to the while loop, will be executed if the loop is exited by 'continue'
-                        continue # Ensure we continue to the next playlist if skipped
-                
-                # If counts are not within the threshold or yt_track_count is None, or user chose not to skip, proceed to copy/update logic below.
-                if yt_track_count is not None:
-                     print(f"Note: YouTube Music playlist '{pl_name}' exists with {yt_track_count} songs, Spotify has {spotify_track_count}. Difference is more than 5. Proceeding with copy/update.")
-                else: # yt_track_count is None
-                     print(f"Warning: Could not determine track count for existing YouTube Music playlist '{pl_name}'. Proceeding with copy/update.")
-
+                yt_track_count = yt_playlist_details.get('trackCount', "unknown")
             except Exception as e:
-                print(f"Warning: Could not fetch details for existing YouTube Music playlist '{pl_name}' (ID: {dst_pl_id}): {e}. Proceeding with copy/update.")
+                print(f"Warning: Could not fetch track count for existing YouTube Music playlist '{pl_name}' (ID: {dst_pl_id}): {e}")
+
+            print(f"Playlist '{pl_name}' already exists on YouTube Music.")
+            print(f"  Spotify playlist has {spotify_track_count} songs.")
+            if yt_track_count != "unknown":
+                print(f"  YouTube Music playlist has {yt_track_count} songs.")
+            else:
+                print(f"  Could not determine song count for YouTube Music playlist.")
+            
+            should_skip_playlist = False
+            while True:
+                user_choice = input("Do you want to skip this playlist? (yes/no): ").lower()
+                if user_choice in ["yes", "y"]:
+                    print(f"Skipping playlist '{pl_name}'.")
+                    print("\nPlaylist done!\n")  # Maintain consistent output for each playlist processed
+                    should_skip_playlist = True
+                    break # Exit the while loop
+                elif user_choice in ["no", "n"]:
+                    print(f"Proceeding to update playlist '{pl_name}'.")
+                    break # Exit the while loop
+                else:
+                    print("Invalid input. Please enter 'yes' or 'no'.")
+            
+            if should_skip_playlist:
+                continue # Move to the next Spotify playlist in the outer loop
         
-        # If we haven't 'continue'd, the original logic for creation (if needed) and copying will execute.
-        # This includes the 'if dst_pl_id is None:' block and the 'copier(...)' call.
+        # If we haven't 'continue'd (because playlist didn't exist or user chose not to skip),
+        # the original logic for creation (if needed) and copying will execute.
         if dst_pl_id is None:
             dst_pl_id = _ytmusic_create_playlist(
                 yt, title=pl_name, description=pl_name, privacy_status=privacy_status
