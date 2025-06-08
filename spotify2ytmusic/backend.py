@@ -237,7 +237,11 @@ def get_playlist_id_by_name(yt: YTMusic, title: str) -> Optional[str]:
             if playlists_list is not None:
                 # Successfully got a list (even if empty)
                 for pl in playlists_list:
+                    # First try exact match
                     if pl["title"] == title:
+                        return pl["playlistId"]
+                    # If title looks like a Spotify ID, check if YouTube title contains it
+                    if title and title in pl["title"]:
                         return pl["playlistId"]
                 return None # Playlist list successfully retrieved, but the specific title was not found.
 
@@ -294,7 +298,11 @@ def get_playlist_id_by_name(yt: YTMusic, title: str) -> Optional[str]:
                 
                 if playlists_list is not None:
                     for pl in playlists_list:
+                        # First try exact match
                         if pl["title"] == title:
+                            return pl["playlistId"]
+                        # If title looks like a Spotify ID, check if YouTube title contains it
+                        if title and title in pl["title"]:
                             return pl["playlistId"]
                     return None
                 else:
@@ -559,6 +567,8 @@ def copy_playlist(
             for pl in spotify_pls["playlists"]:
                 if len(pl.keys()) > 3 and pl["id"] == spotify_playlist_id:
                     pl_name = pl["name"]
+                    if pl_name == "" or pl_name is None:
+                        pl_name = pl["id"]  # Use ID as fallback name
 
         ytmusic_playlist_id = _ytmusic_create_playlist(
             yt,
@@ -627,8 +637,8 @@ def copy_all_playlists(
             continue
 
         pl_name = src_pl["name"]
-        if pl_name == "":
-            pl_name = f"Unnamed Spotify Playlist {src_pl['id']}"
+        if pl_name == "" or pl_name is None:
+            pl_name = src_pl['id']  # Use ID as fallback name
 
         # If resuming, skip playlists until we reach the one after the last processed
         if not start_from_beginning and not should_process:
@@ -640,7 +650,11 @@ def copy_all_playlists(
 
         print(f"\n=== Processing playlist: {pl_name} (ID: {src_pl['id']}) ===")
         
+        # Try to find playlist by name first, then by ID as fallback
         dst_pl_id = get_playlist_id_by_name(yt, pl_name)
+        if dst_pl_id is None and pl_name != src_pl['id']:
+            # If not found by name and name is different from ID, try with ID
+            dst_pl_id = get_playlist_id_by_name(yt, src_pl['id'])
         print(f"Looking up playlist '{pl_name}': id={dst_pl_id}")
 
         spotify_track_count = len(src_pl["tracks"])
