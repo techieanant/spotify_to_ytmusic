@@ -10,9 +10,48 @@ from ytmusicapi import YTMusic
 from typing import Optional, Union, Iterator, Dict, List
 from collections import namedtuple
 from dataclasses import dataclass, field
-
+from spotify2ytmusic import ytmusic_credentials 
 
 SongInfo = namedtuple("SongInfo", ["title", "artist", "album"])
+
+def save_progress(playlist_id: str, progress_file: str = "spotify2ytmusic_progress.json"):
+    """Save the current playlist processing progress"""
+    progress_data = {
+        "last_processed_playlist": playlist_id,
+        "timestamp": time.time()
+    }
+    with open(progress_file, 'w') as f:
+        json.dump(progress_data, f, indent=2)
+
+def load_progress(progress_file: str = "spotify2ytmusic_progress.json") -> Optional[str]:
+    """Load the last processed playlist ID"""
+    if not os.path.exists(progress_file):
+        return None
+    try:
+        with open(progress_file, 'r') as f:
+            data = json.load(f)
+            return data.get("last_processed_playlist")
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+def request_user_intervention():
+    """Request user to update raw headers and oauth2.json"""
+    print("\n" + "="*80)
+    print("AUTHENTICATION ERROR DETECTED")
+    print("="*80)
+    print("The program has encountered repeated authentication failures.")
+    print("This usually means the YouTube Music authentication has expired.")
+    print("\nPlease perform the following steps:")
+    print("1. Update your raw_headers.txt file with fresh headers from YouTube Music")
+    print("2. Run 'ytmusicapi oauth' to generate a new oauth.json file")
+    print("3. Ensure both files are properly updated and saved")
+    print("\nFor detailed instructions on how to get fresh headers, refer to:")
+    print("https://ytmusicapi.readthedocs.io/en/stable/setup/index.html")
+    print("="*80)
+    
+    # Wait for user confirmation
+    input("\nPress ENTER when you have completed the above steps and are ready to continue...")
+    print("Resuming playlist processing...\n")
 
 
 def get_ytmusic() -> YTMusic:
@@ -60,7 +99,7 @@ def _ytmusic_create_playlist(
                     f"ERROR: (Retrying create_playlist: {title}) {e} in {exception_sleep} seconds"
                 )
                 time.sleep(exception_sleep)
-                exception_sleep *= 2
+                exception_sleep *= 1.2
 
         return {
             "s2yt error": 'ERROR: Could not create playlist "{title}" after multiple retries'
@@ -186,28 +225,94 @@ def get_playlist_id_by_name(yt: YTMusic, title: str) -> Optional[str]:
     """
     #  ytmusicapi seems to run into some situations where it gives a Traceback on listing playlists
     #  https://github.com/sigma67/ytmusicapi/issues/539
-    try:
-        playlists = yt.get_library_playlists(limit=5000)
-    except KeyError as e:
-        print("=" * 60)
-        print(f"Attempting to look up playlist '{title}' failed with KeyError: {e}")
-        print(
-            "This is a bug in ytmusicapi that prevents 'copy_all_playlists' from working."
-        )
-        print(
-            "You will need to manually copy playlists using s2yt_list_playlists and s2yt_copy_playlist"
-        )
-        print(
-            "until this bug gets resolved.  Try `pip install --upgrade ytmusicapi` just to verify"
-        )
-        print("you have the latest version of that library.")
-        print("=" * 60)
-        raise
+    
+    exception_sleep = 5
+    max_retries = 5
+    current_yt_instance = yt  # Use the passed-in instance initially
 
-    for pl in playlists:
-        if pl["title"] == title:
-            return pl["playlistId"]
+    for attempt in range(max_retries):
+        try:
+            playlists_list = current_yt_instance.get_library_playlists(limit=5000)
 
+            if playlists_list is not None:
+                # Successfully got a list (even if empty)
+                for pl in playlists_list:
+                    # First try exact match
+                    if pl["title"] == title:
+                        return pl["playlistId"]
+                    # If title looks like a Spotify ID, check if YouTube title contains it
+                    if title and title in pl["title"]:
+                        return pl["playlistId"]
+                return None # Playlist list successfully retrieved, but the specific title was not found.
+
+            # playlists_list is None, means the API call effectively failed to return data
+            print(f"Warning: (Attempt {attempt + 1}/{max_retries}) yt.get_library_playlists returned None for playlist '{title}'. Retrying in {exception_sleep}s...")
+            # Proceed to retry logic
+
+        except TypeError as e:
+            # This is the specific error the user wants to catch and retry
+            print(f"Warning: (Attempt {attempt + 1}/{max_retries}) Encountered TypeError for playlist '{title}': {e}. Retrying in {exception_sleep}s...")
+            # Proceed to retry logic
+        except KeyError as e: 
+            # This is the pre-existing specific ytmusicapi bug handling for KeyError
+            print("=" * 60)
+            print(f"Attempting to look up playlist '{title}' failed with KeyError: {e}")
+            print(
+                "This is a bug in ytmusicapi that prevents 'copy_all_playlists' from working."
+            )
+            print(
+                "You will need to manually copy playlists using s2yt_list_playlists and s2yt_copy_playlist"
+            )
+            print(
+                "until this bug gets resolved.  Try `pip install --upgrade ytmusicapi` just to verify"
+            )
+            print("you have the latest version of that library.")
+            print("=" * 60)
+            raise # Re-raise for this specific known bug, no retry for this particular exception.
+
+        # Common retry logic for TypeError or if playlists_list was None
+        if attempt < max_retries - 1:
+            time.sleep(exception_sleep)
+            exception_sleep = min(exception_sleep * 1.2, 60)  # Exponential backoff with a cap
+            print(f"Re-initializing YTMusic before next attempt for '{title}'...")
+            try:
+                # Assuming ytmusic_credentials.setup_ytmusic_with_raw_headers() prepares for re-auth
+                # And get_ytmusic() returns a fresh, working instance.
+                ytmusic_credentials.setup_ytmusic_with_raw_headers() 
+                yt = get_ytmusic() # Get a fresh instance for the next try
+            except Exception as reinit_e:
+                print(f"ERROR: Failed to re-initialize YTMusic during retry for '{title}': {reinit_e}")
+                # If re-initialization fails, we might want to break or return None early.
+                # For now, let it try the next iteration with potentially stale 'current_yt_instance',
+                # or if get_ytmusic() failed, it might raise an exception that stops the process.
+        else:
+            # All retries exhausted - request user intervention
+            print(f"ERROR: Failed to retrieve playlist list to find '{title}' after {max_retries} retries due to TypeError or None response.")
+            request_user_intervention()
+            
+            # After user intervention, try once more with fresh credentials
+            try:
+                ytmusic_credentials.setup_ytmusic_with_raw_headers() 
+                yt = get_ytmusic()
+                playlists_list = yt.get_library_playlists(limit=5000)
+                
+                if playlists_list is not None:
+                    for pl in playlists_list:
+                        # First try exact match
+                        if pl["title"] == title:
+                            return pl["playlistId"]
+                        # If title looks like a Spotify ID, check if YouTube title contains it
+                        if title and title in pl["title"]:
+                            return pl["playlistId"]
+                    return None
+                else:
+                    print(f"ERROR: Still unable to retrieve playlist list after user intervention for '{title}'")
+                    return None
+            except Exception as e:
+                print(f"ERROR: Failed to retrieve playlist list even after user intervention for '{title}': {e}")
+                return None
+
+    # Fallback if loop completes (e.g. if max_retries is 0, though it's 5 here)
     return None
 
 
@@ -418,7 +523,9 @@ def copier(
                         f"ERROR: (Retrying add_playlist_items: {dst_pl_id} {dst_track['videoId']}) {e} in {exception_sleep} seconds"
                     )
                     time.sleep(exception_sleep)
-                    exception_sleep *= 2
+                    exception_sleep *= 1.2
+                    ytmusic_credentials.setup_ytmusic_with_raw_headers() 
+                    yt = get_ytmusic()  # Reinitialize YTMusic to refresh headers
 
         if track_sleep:
             time.sleep(track_sleep)
@@ -460,6 +567,8 @@ def copy_playlist(
             for pl in spotify_pls["playlists"]:
                 if len(pl.keys()) > 3 and pl["id"] == spotify_playlist_id:
                     pl_name = pl["name"]
+                    if pl_name == "" or pl_name is None:
+                        pl_name = pl["id"]  # Use ID as fallback name
 
         ytmusic_playlist_id = _ytmusic_create_playlist(
             yt,
@@ -502,16 +611,88 @@ def copy_all_playlists(
     spotify_pls = load_playlists_json()
     yt = get_ytmusic()
 
+    # Check for existing progress and ask user if they want to resume
+    last_processed = load_progress()
+    start_from_beginning = True
+    
+    if last_processed:
+        print(f"\nFound previous progress: last processed playlist ID was '{last_processed}'")
+        while True:
+            user_choice = input("Do you want to resume from where you left off? (yes/no): ").lower()
+            if user_choice in ["yes", "y"]:
+                start_from_beginning = False
+                print(f"Resuming from playlist after '{last_processed}'...")
+                break
+            elif user_choice in ["no", "n"]:
+                print("Starting from the beginning...")
+                break
+            else:
+                print("Invalid input. Please enter 'yes' or 'no'.")
+
+    # Flag to track if we should start processing (used when resuming)
+    should_process = start_from_beginning
+    
     for src_pl in spotify_pls["playlists"]:
         if str(src_pl.get("name")) == "Liked Songs":
             continue
 
         pl_name = src_pl["name"]
-        if pl_name == "":
-            pl_name = f"Unnamed Spotify Playlist {src_pl['id']}"
+        if pl_name == "" or pl_name is None:
+            pl_name = src_pl['id']  # Use ID as fallback name
 
+        # If resuming, skip playlists until we reach the one after the last processed
+        if not start_from_beginning and not should_process:
+            if src_pl["id"] == last_processed:
+                should_process = True  # Start processing from the next playlist
+            continue
+        elif not start_from_beginning and src_pl["id"] == last_processed:
+            continue  # Skip the last processed playlist itself
+
+        print(f"\n=== Processing playlist: {pl_name} (ID: {src_pl['id']}) ===")
+        
+        # Try to find playlist by name first, then by ID as fallback
         dst_pl_id = get_playlist_id_by_name(yt, pl_name)
+        if dst_pl_id is None and pl_name != src_pl['id']:
+            # If not found by name and name is different from ID, try with ID
+            dst_pl_id = get_playlist_id_by_name(yt, src_pl['id'])
         print(f"Looking up playlist '{pl_name}': id={dst_pl_id}")
+
+        spotify_track_count = len(src_pl["tracks"])
+
+        if dst_pl_id is not None:
+            yt_track_count = "unknown"
+            try:
+                yt_playlist_details = yt.get_playlist(playlistId=dst_pl_id, limit=1)
+                yt_track_count = yt_playlist_details.get('trackCount', "unknown")
+            except Exception as e:
+                print(f"Warning: Could not fetch track count for existing YouTube Music playlist '{pl_name}' (ID: {dst_pl_id}): {e}")
+
+            print(f"Playlist '{pl_name}' already exists on YouTube Music.")
+            print(f"  Spotify playlist has {spotify_track_count} songs.")
+            if yt_track_count != "unknown":
+                print(f"  YouTube Music playlist has {yt_track_count} songs.")
+            else:
+                print(f"  Could not determine song count for YouTube Music playlist.")
+            
+            should_skip_playlist = False
+            while True:
+                user_choice = input("Do you want to skip this playlist? (yes/no): ").lower()
+                if user_choice in ["yes", "y"]:
+                    print(f"Skipping playlist '{pl_name}'.")
+                    print("\nPlaylist done!\n")  # Maintain consistent output for each playlist processed
+                    should_skip_playlist = True
+                    break # Exit the while loop
+                elif user_choice in ["no", "n"]:
+                    print(f"Proceeding to update playlist '{pl_name}'.")
+                    break # Exit the while loop
+                else:
+                    print("Invalid input. Please enter 'yes' or 'no'.")
+            
+            if should_skip_playlist:
+                continue # Move to the next Spotify playlist in the outer loop
+        
+        # If we haven't 'continue'd (because playlist didn't exist or user chose not to skip),
+        # the original logic for creation (if needed) and copying will execute.
         if dst_pl_id is None:
             dst_pl_id = _ytmusic_create_playlist(
                 yt, title=pl_name, description=pl_name, privacy_status=privacy_status
@@ -534,6 +715,15 @@ def copy_all_playlists(
             track_sleep,
             yt_search_algo,
         )
+        
+        # Save progress after successfully processing each playlist
+        save_progress(src_pl["id"])
+        print(f"Progress saved: completed playlist '{pl_name}' (ID: {src_pl['id']})")
         print("\nPlaylist done!\n")
 
+    # Clean up progress file when all playlists are done
+    if os.path.exists("spotify2ytmusic_progress.json"):
+        os.remove("spotify2ytmusic_progress.json")
+        print("Progress file cleaned up.")
+    
     print("All done!")
