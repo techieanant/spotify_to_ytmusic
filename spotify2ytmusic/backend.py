@@ -564,11 +564,22 @@ def copy_all_playlists(
                 yt_track_count = yt_playlist_details.get('trackCount')
 
                 if yt_track_count is not None and abs(yt_track_count - spotify_track_count) <= 5:
-                    print(f"Skipping playlist '{pl_name}': YouTube Music playlist exists with {yt_track_count} songs, which is within 5 songs of Spotify's {spotify_track_count} songs.")
-                    print("\nPlaylist done!\n")  # Maintain consistent output for each playlist processed
-                    continue # Move to the next Spotify playlist
+                    print(f"Playlist '{pl_name}' already exists on YouTube Music with {yt_track_count} songs (Spotify has {spotify_track_count} songs).")
+                    while True:
+                        user_choice = input("Do you want to skip this playlist? (yes/no): ").lower()
+                        if user_choice in ["yes", "y"]:
+                            print(f"Skipping playlist '{pl_name}'.")
+                            print("\nPlaylist done!\n")  # Maintain consistent output for each playlist processed
+                            continue # Move to the next Spotify playlist
+                        elif user_choice in ["no", "n"]:
+                            print(f"Proceeding to update playlist '{pl_name}'.")
+                            break
+                        else:
+                            print("Invalid input. Please enter 'yes' or 'no'.")
+                    else: # This else belongs to the while loop, will be executed if the loop is exited by 'continue'
+                        continue # Ensure we continue to the next playlist if skipped
                 
-                # If counts are not within the threshold or yt_track_count is None, proceed to copy/update logic below.
+                # If counts are not within the threshold or yt_track_count is None, or user chose not to skip, proceed to copy/update logic below.
                 if yt_track_count is not None:
                      print(f"Note: YouTube Music playlist '{pl_name}' exists with {yt_track_count} songs, Spotify has {spotify_track_count}. Difference is more than 5. Proceeding with copy/update.")
                 else: # yt_track_count is None
